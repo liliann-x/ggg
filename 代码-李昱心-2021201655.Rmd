@@ -1,0 +1,262 @@
+---
+title: "基于俄乌战争死亡人数的时序分析"
+author: "李昱心"
+date: "2024年6月13日"
+output: 
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: false
+    lightbox: true
+    gallery: false
+    highlight: kate
+    number_sections: yes
+---
+# 案例背景
+这是一个和平的年代，这也是一个战乱的年代。
+
+自2022年2月俄乌战争打响第一炮，纷乱的战火再未停歇，无数无辜的生命丧生于此，对两国乃至整个世界产生巨大影响。本案例采用2022年2月25日至2024年6月9日乌克兰累积死亡人数数据以及每日战斗机、直升机、装甲车、坦克、海军舰艇等军用装备损毁数量，对此进行时间序列分析和预测。
+
+# 数据介绍与分析
+## 数据介绍
+
+### 准备工作
+```{r 准备工作, message=FALSE, warning=FALSE}
+options(repos = c(CRAN = "https://mirrors.ustc.edu.cn/CRAN/"))
+# install.packages("rmdformats")
+# install.packages("aTSA")
+# install.packages("forecast")
+# install.packages("rugarch")
+# install.packages("tseries")
+library(rmdformats)
+library(aTSA)
+library(forecast)
+library(rugarch)
+library(tseries)
+```
+
+### 数据读入
+读取数据"Russia_losses_data.csv"，命名为loss_data。并用summary函数查看每个数据中包含各个变量的基本情况。
+```{r 数据读入, message=FALSE, warning=FALSE}
+loss_data <- read.csv("/Users/liliann/Desktop/2024spring/time_series/李昱心-2021201655-时间序列分析结课报告/Russia_losses_data1.csv")
+summary(loss_data)
+```
+
+### 数据预处理
+去除前30天的异常值，用0填充NA，同时将最后60天数据留作测试集
+```{r, message=FALSE, warning=FALSE}
+loss_data <- loss_data[-c(1:30),]
+loss_data[is.na(loss_data)] <- 0
+
+valid_data <- loss_data[c(746:806),]
+loss_data <- loss_data[-c(746:806),]
+summary(valid_data)
+summary(loss_data)
+```
+
+### 绘制原始数据点线图 
+```{r, message=FALSE, warning=FALSE}
+options(scipen = 100)
+par(cex.axis = 0.9, cex.lab = 0.9)
+plot(1:length(loss_data$personnel_ac),type="l", loss_data$personnel_ac, xlab="Date", ylab="Cumulative Death Toll", xaxt="n")
+axis(1, at = seq(1, length(loss_data$date), by = 100), labels = loss_data$date[seq(1, length(loss_data$date), by = 100)])
+```
+
+### 计算每日死亡人数并绘图 
+```{r, message=FALSE, warning=FALSE}
+personnel_daily <- diff(loss_data$personnel_ac)
+plot(1:length(personnel_daily),type="l", personnel_daily, xlab="Date", ylab="Daily Death Toll", xaxt="n")
+axis(1, at = seq(1, length(loss_data$date), by = 100), labels = loss_data$date[seq(1, length(loss_data$date), by = 100)])
+```
+
+## 数据分析
+### 对死亡人数进行平稳性检验
+```{r, message=FALSE, warning=FALSE}
+aTSA::adf.test(personnel_daily)
+```
+原序列的平稳性检验中，并非所有模型均通过检验，考虑对原序列进行一阶差分后再建模。
+
+```{r, message=FALSE, warning=FALSE}
+aTSA::adf.test(diff(personnel_daily))
+```
+一阶差分后序列的所有模型均通过检验，是平稳序列，原始序列一阶差分后的时序图如下。
+
+```{r, message=FALSE, warning=FALSE}
+personnel_daily_diff <- diff(personnel_daily)
+plot(1:length(personnel_daily_diff),type="l", personnel_daily_diff, xlab="Date", ylab="Diff Daily Death Toll", xaxt="n")
+axis(1, at = seq(1, length(loss_data$date), by = 100), labels = loss_data$date[seq(1, length(loss_data$date), by = 100)])
+```
+
+### 对死亡人数进行白噪声检验
+```{r, message=FALSE, warning=FALSE}
+for(i in c(6,12,24)){
+  print(Box.test(personnel_daily_diff,type="Ljung-Box",lag=i))
+}
+```
+白噪声检验显示，延迟6、12、24阶的Ljung-Box统计量P值只有2.2*10^-6，小于显著性水平0.05，因此
+认为该序列为非白噪声序列。结合前面的平稳性分检验的结果，我们可以认为俄乌战争死亡人数序列是平稳
+非白噪声序列。
+
+### 自相关分析
+```{r, message=FALSE, warning=FALSE}
+par(mfrow=c(1,2))
+#remainder <- as.vector(personnel_daily_stl[1]$time.series[,3])
+acf(personnel_daily_diff, lag=30)
+pacf(personnel_daily_diff, lag=30)
+acf(personnel_daily_diff, plot=F)
+pacf(personnel_daily_diff, plot=F)
+```
+
+### 时间序列分解
+使用STL加法模型分解序列，得到季节项、趋势项和随机波动项，这里根据序列的含义分析三项
+例子：气温序列分解出来的季节项跟真实季节的分布非常一致
+```{r, message=FALSE, warning=FALSE}
+personnel_daily_tmp <- ts(personnel_daily, start=c(2022, 3, 25), frequency=365)
+personnel_daily_stl <- stl(personnel_daily_tmp, s.window="periodic", t.window = 50)
+plot(personnel_daily_stl)
+```
+
+
+### 相关性分析
+对其他变量和战争死亡人数的相关性进行分析
+```{r, message=FALSE, warning=FALSE}
+correlation_matrix <- cor(loss_data[, 4], loss_data[, c(13:21)], use = "complete.obs")
+print(correlation_matrix)
+
+par(mfrow=c(2,5))
+for (i in 1:9) {
+    plot(loss_data[, c(12+i,4)], cex=0.2)
+}
+```
+
+| Aircraft   | Helicopter | Tank | APC   | Field Artillery |   MRL | Drone   | Naval Ship | Special Equipment |
+|:----------:|:----------:|:----:|:-----:|:---------------:|:-----:|:-------:|:----------:|:-----------------:|
+| -0.396      | -0.296      | 0.016| 0.022 | 0.568         | -0.009| 0.420   | -0.059     | 0.532             |
+
+# 模型拟合与预测
+## ARIMA模型
+### 基于ARIMA模型的死亡人数建模
+使用auto.arima()函数建模，省去比较各个模型AIC、BIC值的环节
+```{r, message=FALSE, warning=FALSE}
+fit <- auto.arima(personnel_daily, seasonal = TRUE);fit
+tsdiag(fit)
+```
+
+最终挑选模型为ARIMA(1,1,1)，为进一步预测，使用Arima()函数补上漂移项
+```{r, message=FALSE, warning=FALSE}
+fit <- Arima(personnel_daily, c(1, 1, 1), include.drift = T);fit
+tsdiag(fit)
+```
+
+### 基于ARIMA模型对死亡人数的预测
+基于ARIMA(1, 1, 1)模型对俄乌战争死亡人数进行两个月的预测
+```{r, message=FALSE, warning=FALSE}
+arima_fore <- forecast::forecast(fit, h=60);arima_fore
+plot(arima_fore, lty=2)
+lines(arima_fore$fitted, col=4)
+```
+
+## 条件异方差模型
+### 平稳性检验和纯随机性检验
+由于ADF检验主要适用于方差齐性场合，对异方差序列的平稳性检验可能会有偏差，因此我们采用PP检验。
+
+```{r PP检验, message=FALSE, warning=FALSE}
+PP.test(personnel_daily_diff)
+```
+
+PP检验结果显示延迟6阶的$\tau$统计量的值等于-54.451，检验统计量的$p$值等于0.01，
+这说明差分后序列可以视为平稳序列，接下来要对差分后序列进行纯随机性检验。
+
+传统的纯随机性检验都是借助LB检验统计量进行的，而LB检验统计量是在满足序列方差齐性的假定
+下构造的。当序列存在异方差属性时，LB检验统计量不再近似服从卡方分布。因此，在异方差可能
+存在的场合，LB检验结果只能作为参考信息之一，还要参考自相关系数的大小，如果自相关系数都很小，
+可以认为序列近似纯随机序列。
+
+```{r 纯随机性检验, message=FALSE, warning=FALSE}
+# 1阶差分后序列纯随机性检验
+for (k in 1:4) 
+    print(Box.test(personnel_daily_diff, lag = 6 * k, type = "Ljung-Box"))
+# 考察具体的自相关系数
+print(acf(personnel_daily_diff, lag = 24), which = 1)
+```
+
+结果显示，LB检验的$p$值都很小，所以白噪声检验结果是该序列为非白噪声序列。
+但延迟各阶的自相关系数值显示序列值之间的相关性很小，最大的$\rho_{17} = 0.079$。
+因此，综合考虑，可以认为差分后序列近似为纯随机序列。
+
+### ARCH检验
+```{r ARCH检验, message=FALSE, warning=FALSE}
+# 使用arima函数进行差分运算
+fit4 <- arima(personnel_daily, order = c(0, 1, 0))
+# 差分后序列条件异方差检验
+arch.test(fit4)
+```
+Portmanteau Q检验和LM检验24阶延迟都显示该序列显著方差非齐，这说明残差平方序列
+中存在长期的相关关系。这种情况下，通常可以用高阶ARCH模型或者低阶GARCH模型提取残差
+平方序列中蕴含的相关关系，接下来使用低阶GARCH模型对俄乌战争死亡人数进行建模和预测。
+
+### 基于GARCH模型的死亡人数建模
+```{r GARCH模型, message=FALSE, warning=FALSE}
+spec <- ugarchspec(
+  mean.model = list(armaOrder = c(0, 0), include.mean = F),
+  variance.model = list(garchOrder = c(1, 1), model = "sGARCH"),
+  distribution.model = "norm"
+)
+fit5 <- ugarchfit(spec, data = personnel_daily_diff, method = "CLS");fit5
+plot(fit5, which = 1)
+abline(h = c(-1.96*sd(personnel_daily_diff), 1.96*sd(personnel_daily_diff)), col = 1, lwd = 2, lty = 2)
+```
+
+### 基于GARCH模型对死亡人数的预测
+对俄乌战争死亡人数拟合ARIMA(0, 1, 0)-GARCH(1, 1)模型，基于条件最小二乘估计方法和正态分布假定，得到的拟合模型如下： 
+$$
+\begin{cases}
+x_t = x_{t-1} + \varepsilon_t \\
+\varepsilon_t = \sqrt{h_t}e_t, \ e_t \sim N(0, 1) \\
+h_t = 1009.7082 + 0.1102\varepsilon_{t-1}^2 + 0.8523h_{t-1}
+\end{cases}
+$$
+
+```{r}
+garch_fore <- ugarchforecast(fit5, data = personnel_daily, n.ahead = 10)
+plot(garch_fore, lty = 2, which = 1)
+plot(garch_fore, lty = 2, which = 3)
+```
+
+## 指数平滑预测模型
+### 基于Holt两参数指数平滑模型的死亡人数建模
+我们采用确定性因素分析的方法来对俄乌战争每日死亡人数进行拟合，从时序图中可以看出，俄乌战争每日死亡人数
+有线性增长的趋势，因此首先使用Holt两参数指数平滑法进行拟合
+```{r Holt两参数指数平滑, message=FALSE, warning=FALSE}
+fit2 <- HoltWinters(personnel_daily, gamma = F);fit2
+```
+计算得到的平滑系数： $$\alpha = 0.3322378, \ \beta = 0.005416038$$
+
+通过Holt两参数指数平滑法不断迭代，得到最后一期的参数估计值为： $$a(t) = 1232.356657, \ b(t) = 2.121021$$ 
+则未来任意k期的预测值为： $$\hat{x}_{t+k} = 1232.356657 + 2.121021k, \ \forall k \geqslant 1$$
+
+### 基于Holt两参数指数平滑模型对死亡人数的预测
+接下来基于Holt两参数指数平滑，对俄乌战争未来两个月的死亡人数进行预测
+```{r 基于Holt两参数指数平滑的预测, message=FALSE, warning=FALSE}
+holt2_fore <- forecast(fit2, h = 60);holt2_fore
+plot(holt2_fore, lty = 2, xaxt="n")
+axis(1, at = seq(1, length(loss_data$date), by = 100), labels = loss_data$date[seq(1, length(loss_data$date), by = 100)])
+lines(holt2_fore$fitted, col = 4)
+```
+
+### 基于Holt三参数指数平滑模型的死亡人数建模
+在通过Holt两参数指数平滑对俄乌战争死亡人数进行拟合后，考虑到数据可能存在着季节效应，
+且季节效应没有随着时间而增大的趋势，因此考虑Holt-Winters三参数指数平滑中的季节加法模型。
+```{r Holt-Winters三参数指数平滑, message=FALSE, warning=FALSE}
+fit3 <- HoltWinters(personnel_daily_tmp, seasonal = "multi");fit3
+```
+
+### 基于Holt三参数指数平滑模型对死亡人数的预测
+接下来基于Holt三参数指数平滑，对俄乌战争未来两个月的死亡人数进行预测
+```{r 基于Holt-Winters三参数指数平滑的预测, message=FALSE, warning=FALSE}
+holt3_fore <- forecast(fit3, h = 60);holt3_fore
+plot(holt3_fore, lty = 2)
+axis(1, at = seq(1, length(loss_data$date), by = 100), labels = loss_data$date[seq(1, length(loss_data$date), by = 100)])
+lines(holt3_fore$fitted, col = 4)
+# print(as.vector(holt2_fore$mean))
+print(as.vector(holt3_fore$mean))
+```
